@@ -23,14 +23,17 @@ VLLM_USE_V1="${VLLM_USE_V1:-1}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-128}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-8192}"
-GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.95}"
+# 默认 0.90：给 CUDA graph capture / activation buffer 留缓冲，避免 4 卡 H20 上冷启动时 shm_broadcast cancelled
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.90}"
 
-# 开关：默认按官方 Recipe（不开 expert-parallel、不 enforce-eager、开 async-scheduling、禁视频）
-ENABLE_ASYNC_SCHEDULING="${ENABLE_ASYNC_SCHEDULING:-1}"
+# 开关：
+#   - 默认关闭 async-scheduling：capture CUDA graph 阶段 IPC 压力过大容易触发 shm_broadcast 60s 超时
+#   - 默认开启 enforce-eager：跳过 CUDA graph capture，最稳的 4 卡 H20 冷启动方式（可以设 ENFORCE_EAGER=0 关闭）
+ENABLE_ASYNC_SCHEDULING="${ENABLE_ASYNC_SCHEDULING:-0}"
 ENABLE_EXPERT_PARALLEL="${ENABLE_EXPERT_PARALLEL:-0}"
 ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-0}"
 DISABLE_CUSTOM_ALL_REDUCE="${DISABLE_CUSTOM_ALL_REDUCE:-0}"
-ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
+ENFORCE_EAGER="${ENFORCE_EAGER:-1}"
 LIMIT_VIDEO_PER_PROMPT="${LIMIT_VIDEO_PER_PROMPT:-0}"
 LIMIT_IMAGE_PER_PROMPT="${LIMIT_IMAGE_PER_PROMPT:-}"
 
@@ -85,7 +88,15 @@ export CUDA_VISIBLE_DEVICES="${GPU_IDS}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 export VLLM_WORKER_MULTIPROC_METHOD="${VLLM_WORKER_MULTIPROC_METHOD:-spawn}"
-export VLLM_USE_V1="${VLLM_USE_V1}"
+# 关闭 flashinfer 的 trtllm allreduce fusion：flashinfer 0.6.4 的 trtllm_allreduce_fusion.cu 在 CUDA 12.6/nvcc 环境下 ninja 编译失败
+# （namespace "std" has no member "optional"），会污染日志、拖慢冷启动，且并非必需路径。
+export VLLM_ALLREDUCE_USE_SYMM_MEM="${VLLM_ALLREDUCE_USE_SYMM_MEM:-0}"
+export VLLM_USE_FLASHINFER_ALLREDUCE_FUSION="${VLLM_USE_FLASHINFER_ALLREDUCE_FUSION:-0}"
+# vLLM >= 0.11 默认走 V1，且 0.25+ 已移除 VLLM_USE_V1 环境变量；
+# 仅在显式要求回退到 V0 时才 export，避免出现 "Unknown vLLM environment variable" 警告
+if [[ "${VLLM_USE_V1}" != "1" ]]; then
+  export VLLM_USE_V1="${VLLM_USE_V1}"
+fi
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 
 # ===== 组装 vLLM 参数 =====
@@ -105,18 +116,43 @@ SERVER_ARGS=(
   --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}"
 )
 
-# 多模态输入限制：优先使用完整 JSON；否则用官方 4 卡 Recipe 推荐（禁视频）
+# 多模态输入限制：
+#   - 若显式提供了完整 JSON（LIMIT_MM_PER_PROMPT），直接沿用；
+#   - 否则默认用 JSON 语法（vLLM 0.8/0.11/0.25 全部兼容）；
+#   - 仅当 USE_LIMIT_MM_DOT_SYNTAX=1 时才使用 --limit-mm-per-prompt.video 这种点号语法（仅 vLLM>=0.11 支持）。
+USE_LIMIT_MM_DOT_SYNTAX="${USE_LIMIT_MM_DOT_SYNTAX:-0}"
 if [[ -n "${LIMIT_MM_PER_PROMPT}" ]]; then
   SERVER_ARGS+=(--limit-mm-per-prompt "${LIMIT_MM_PER_PROMPT}")
-else
+elif [[ "${USE_LIMIT_MM_DOT_SYNTAX}" == "1" ]]; then
   SERVER_ARGS+=(--limit-mm-per-prompt.video "${LIMIT_VIDEO_PER_PROMPT}")
   if [[ -n "${LIMIT_IMAGE_PER_PROMPT}" ]]; then
     SERVER_ARGS+=(--limit-mm-per-prompt.image "${LIMIT_IMAGE_PER_PROMPT}")
   fi
+else
+  if [[ -n "${LIMIT_IMAGE_PER_PROMPT}" ]]; then
+    SERVER_ARGS+=(--limit-mm-per-prompt "{\"image\":${LIMIT_IMAGE_PER_PROMPT},\"video\":${LIMIT_VIDEO_PER_PROMPT}}")
+  else
+    SERVER_ARGS+=(--limit-mm-per-prompt "{\"video\":${LIMIT_VIDEO_PER_PROMPT}}")
+  fi
 fi
 
 if [[ "${ENABLE_ASYNC_SCHEDULING}" == "1" ]]; then
-  SERVER_ARGS+=(--async-scheduling)
+  # --async-scheduling 仅 vLLM>=0.11 支持；老版本会 argparse 直接报错，运行时探测一下
+  if python - <<'PY' >/dev/null 2>&1
+import sys
+try:
+    from importlib.metadata import version
+except Exception:
+    from importlib_metadata import version  # type: ignore
+v = version('vllm')
+maj, mnr = (int(x) for x in v.split('.')[:2])
+sys.exit(0 if (maj, mnr) >= (0, 11) else 1)
+PY
+  then
+    SERVER_ARGS+=(--async-scheduling)
+  else
+    echo "[warn] 当前 vLLM 版本不支持 --async-scheduling，已自动跳过该参数。"
+  fi
 fi
 
 if [[ "${ENABLE_PREFIX_CACHING}" == "1" ]]; then
