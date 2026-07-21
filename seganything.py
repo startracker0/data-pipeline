@@ -343,7 +343,9 @@ def build_mask_generator(model_dir: Path, device: int, dtype_name: str):
     print("[2/4] loading image processor for fallback pipeline...", flush=True)
     processor = load_image_processor(model_path)
     print(f"[2/4] fallback image processor = {type(processor).__name__}, size={processor.size}", flush=True)
-    model_kwargs = {"torch_dtype": torch_dtype, "low_cpu_mem_usage": True, "local_files_only": True}
+    # local_files_only 属于 transformers.pipeline 内部的 hub/config 加载参数，
+    # 放进 model_kwargs 会在部分 transformers 版本中导致 AutoConfig.from_pretrained 重复传参。
+    model_kwargs = {"torch_dtype": torch_dtype, "low_cpu_mem_usage": True}
     return pipeline(
         "mask-generation",
         model=model_path,

@@ -5,11 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ENV_PYTHON=${ENV_PYTHON:-python}
 GPU=${GPU:-0}
+# DEVICE 是 CUDA_VISIBLE_DEVICES 生效后的逻辑编号；例如 GPU=4 时，PyTorch 中应使用 cuda:0。
 DEVICE=${DEVICE:-0}
 DTYPE=${DTYPE:-float32}
 
 MODEL_DIR=${MODEL_DIR:-/mnt/xxr/SAM2}
-VIDEO=${VIDEO:-/apdcephfs_gy7/share_305004851/hunyuan/yinanliang/wam/fastwam/data/robotwin2.0/videos/chunk-004/observation.images.cam_high/episode_004000.mp4}
+VIDEO=${VIDEO:-/apdcephfs_gy7/share_305004851/hunyuan/yinanliang/wam/fastwam/data/robotwin2.0/videos/chunk-012/observation.images.cam_high/episode_012000.mp4}
 VIDEO_STEM=""
 if [[ -n "${VIDEO}" ]]; then
     VIDEO_STEM="$(basename "${VIDEO}")"
@@ -90,6 +91,10 @@ echo "[INFO] using python command: ${ENV_PYTHON}"
 echo "[INFO] using SAM2 model dir: ${MODEL_DIR}"
 echo "[INFO] using dtype: ${DTYPE}"
 export CUDA_VISIBLE_DEVICES="${GPU}"
+if [[ "${DEVICE}" != "-1" && "${GPU}" != *","* && "${DEVICE}" != "0" ]]; then
+    echo "[WARN] CUDA_VISIBLE_DEVICES=${GPU} 只暴露一张卡，PyTorch 逻辑设备应为 cuda:0；自动将 DEVICE=${DEVICE} 改为 0" >&2
+    DEVICE=0
+fi
 
 EXTRA_ARGS=()
 if [[ "${NO_MASK}" == "1" ]]; then
