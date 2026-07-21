@@ -88,6 +88,81 @@ def stable_color(index: int) -> np.ndarray:
     return rng.integers(40, 256, size=3, dtype=np.uint8)
 
 
+COLOR_WORDS = {
+    "black",
+    "blue",
+    "brown",
+    "cyan",
+    "gold",
+    "gray",
+    "grey",
+    "green",
+    "orange",
+    "pink",
+    "purple",
+    "red",
+    "silver",
+    "teal",
+    "white",
+    "yellow",
+}
+RELATION_WORDS = {
+    "above",
+    "behind",
+    "below",
+    "beside",
+    "between",
+    "front",
+    "inside",
+    "left",
+    "near",
+    "next",
+    "of",
+    "on",
+    "right",
+    "side",
+    "under",
+}
+RELATION_PHRASE_PREFIXES = (
+    "left of",
+    "left side",
+    "right of",
+    "right side",
+    "on the left",
+    "on the right",
+    "next to",
+    "beside",
+    "near",
+)
+NON_OBJECT_BASES = COLOR_WORDS | RELATION_WORDS | {"the", "a", "an", "with", "side", "position"}
+
+
+def normalize_label_text(text: Any) -> str:
+    return " ".join(str(text or "").strip().lower().replace("_", " ").replace("-", " ").split())
+
+
+def is_non_object_answer(answer: dict[str, Any]) -> bool:
+    prompt = normalize_label_text(answer.get("prompt"))
+    base_object = normalize_label_text(answer.get("base_object"))
+    if base_object in NON_OBJECT_BASES:
+        return True
+    prompt_words = prompt.split()
+    if len(prompt_words) == 1 and prompt in NON_OBJECT_BASES:
+        return True
+    if any(prompt.startswith(prefix) for prefix in RELATION_PHRASE_PREFIXES):
+        return True
+    if prompt_words and all(word in NON_OBJECT_BASES for word in prompt_words):
+        return True
+    return False
+
+
+def display_label(info: dict[str, Any]) -> str:
+    base_object = str(info.get("base_object") or "").strip()
+    if base_object:
+        return base_object
+    return str(info.get("prompt") or "object").strip() or "object"
+
+
 def load_final_answer_points(selection_json: Path) -> list[dict[str, Any]]:
     data = json.loads(selection_json.read_text(encoding="utf-8"))
     answers = data.get("final_answers")
@@ -97,6 +172,8 @@ def load_final_answer_points(selection_json: Path) -> list[dict[str, Any]]:
     prompts: list[dict[str, Any]] = []
     for answer in answers:
         if not answer or not answer.get("found"):
+            continue
+        if is_non_object_answer(answer):
             continue
         bbox = answer.get("bbox_xyxy")
         if not isinstance(bbox, list) or len(bbox) < 4:
@@ -109,6 +186,7 @@ def load_final_answer_points(selection_json: Path) -> list[dict[str, Any]]:
         prompts.append(
             {
                 "prompt": str(answer.get("prompt", "object")),
+                "base_object": str(answer.get("base_object") or "").strip(),
                 "mask_index": answer.get("mask_index"),
                 "bbox_xyxy": [x1, y1, x2, y2],
                 "point_xy": [cx, cy],
@@ -326,13 +404,14 @@ def add_point_prompts(
                 int(oid),
                 {
                     "prompt": item["prompt"],
+                    "base_object": item.get("base_object", ""),
                     "mask_index": item.get("mask_index"),
                     "init_bbox_xyxy": item["bbox_xyxy"],
                     "init_point_xy": item["point_xy"],
                     "confidence": item.get("confidence"),
                 },
             )
-        print(f"[PROMPT] obj_id={obj_idx} type={prompt_type} prompt={item['prompt']} point=({x:.1f},{y:.1f}) bbox={item['bbox_xyxy']} returned_obj_ids={ids_list}", flush=True)
+        print(f"[PROMPT] obj_id={obj_idx} type={prompt_type} prompt={item['prompt']} base_object={item.get('base_object', '')} point=({x:.1f},{y:.1f}) bbox={item['bbox_xyxy']} returned_obj_ids={ids_list}", flush=True)
     return obj_id_to_info
 
 
@@ -450,6 +529,8 @@ def dump_results_jsonl(
                         {
                             "obj_id": oid,
                             "prompt": info.get("prompt", ""),
+                            "base_object": info.get("base_object", ""),
+                            "display_label": display_label(info),
                             "mask_index": info.get("mask_index"),
                             "bbox_xywh_rel": [float(v) for v in box[:4]],
                             "prob": prob,
@@ -503,7 +584,7 @@ def draw_frame(
             y2 = max(0, min(height - 1, y2))
             cv2.rectangle(canvas, (x1, y1), (x2, y2), color.tolist(), 2)
             info = obj_id_to_info.get(oid, {})
-            label = f"{oid}:{info.get('prompt', '')} {prob:.2f}".strip()
+            label = f"{oid}:{display_label(info)} {prob:.2f}".strip()
             cv2.putText(canvas, label, (x1, max(15, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color.tolist(), 1, cv2.LINE_AA)
 
         info = obj_id_to_info.get(oid, {})

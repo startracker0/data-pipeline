@@ -10,7 +10,7 @@ DEVICE=${DEVICE:-0}
 DTYPE=${DTYPE:-float32}
 
 MODEL_DIR=${MODEL_DIR:-/mnt/xxr/SAM2}
-VIDEO=${VIDEO:-/apdcephfs_gy7/share_305004851/hunyuan/yinanliang/wam/fastwam/data/robotwin2.0/videos/chunk-012/observation.images.cam_high/episode_012000.mp4}
+VIDEO=${VIDEO:-/apdcephfs_gy7/share_305004851/hunyuan/yinanliang/wam/fastwam/data/robotwin2.0/videos/chunk-013/observation.images.cam_high/episode_013000.mp4}
 VIDEO_STEM=""
 if [[ -n "${VIDEO}" ]]; then
     VIDEO_STEM="$(basename "${VIDEO}")"

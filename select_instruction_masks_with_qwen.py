@@ -34,12 +34,13 @@ FOCUS_USER_PROMPT_TEMPLATE = """请阅读下面同一个 episode 的英文 instr
 2. 先按动作角色和空间关系归并真实物体：同一个被抓取/移动/摆放的物体只能输出一次；同一个被放在旁边/里面/左边/右边的参照物也只能输出一次。
 3. 如果多条 instructions 只是同一个任务的不同说法，例如 teal microphone、white microphone、compact teal and white microphone 都指同一个 microphone，则只能输出一个 object。
 4. 不要因为同一真实物体在不同 instructions 中出现了不同外观短语就拆成多个 object。例如同一批 instructions 都是在把 can 放到 kitchenpot 边上，那么 red sauce can、red can with gold patterns、red and gold sauce can、sauce can with white details、smooth sauce can 都应视为同一个 sauce can，除非同一条 instruction 明确同时要求区分两个不同的 can。
-5. 必须输出 instructions 明确提到的所有任务相关实体物体，包括被操作物体、被放置目标、容器、支撑面/垫子、关键参照物；不要只输出被操作物体。
-6. 不要输出动作、方位、机械臂、桌子、背景、gripper、left/right arm、robot。
-7. prompt 使用简短英文名词短语，优先保留稳定、最高频、最适合视觉定位的颜色/形状 + 类别，例如 green bottle、purple mat。禁止把跨 instruction 的属性做并集拼接，不要输出 red and white sauce can、grey and red and black kitchenpot 这类 prompt；应输出 red sauce can、sauce can、kitchenpot 或 white cylindrical pot 这种稳定短语。
-8. 对 kitchenpot / pot 这类在仿真画面里常呈现为白色或浅灰色圆柱锅体的物体，不要强行保留 instructions 中互相冲突的 grey、black base、dark top、red indicator light 等局部描述；优先使用 kitchenpot 或 white cylindrical pot。
-9. 如果 instruction 同时描述 white fan 和 purple mat，必须输出两个 objects：white fan 与 purple mat。
-10. 严禁输出 aliases、attributes、reason、explanation 等长字段；每个 object 只允许 prompt、base_object、role 三个字段。
+5. 必须输出 instructions 明确提到的所有任务相关实体物体，包括被操作物体、被放置目标、容器、支撑面/垫子、关键参照物；不要只输出被操作物体。但参照物也必须是可见实体物体本身。
+6. 不要输出动作、方位、关系短语、颜色词、形容词、机械臂、桌子、背景、gripper、left/right arm、robot。严禁把 yellow、red、right、left、right side、right of the red、right of the box、right side of the small pack 这类颜色/方位/关系短语当作 object。
+7. 如果 instruction 写的是 red playingcards box、yellow and red playingcards box、right of the red playingcards box，object 必须是 playingcards box / box，不能输出 red、yellow、right of the red。
+8. prompt 使用简短英文名词短语，优先保留稳定、最高频、最适合视觉定位的颜色/形状 + 类别，例如 green bottle、purple mat。禁止把跨 instruction 的属性做并集拼接，不要输出 red and white sauce can、grey and red and black kitchenpot 这类 prompt；应输出 red sauce can、sauce can、kitchenpot 或 white cylindrical pot 这种稳定短语。
+9. 对 kitchenpot / pot 这类在仿真画面里常呈现为白色或浅灰色圆柱锅体的物体，不要强行保留 instructions 中互相冲突的 grey、black base、dark top、red indicator light 等局部描述；优先使用 kitchenpot 或 white cylindrical pot。
+10. 如果 instruction 同时描述 white fan 和 purple mat，必须输出两个 objects：white fan 与 purple mat。
+11. 严禁输出 aliases、attributes、reason、explanation 等长字段；每个 object 只允许 prompt、base_object、role 三个字段。
 
 输出 JSON schema：
 {
@@ -151,6 +152,36 @@ LOW_CONFIDENCE_DESCRIPTOR_PHRASES = {
 
 REFERENCE_ROLES = {"placement", "reference", "support", "container", "target", "destination"}
 MANIPULATED_ROLES = {"", "manipulated", "object", "item"}
+RELATION_WORDS = {
+    "above",
+    "behind",
+    "below",
+    "beside",
+    "between",
+    "front",
+    "inside",
+    "left",
+    "near",
+    "next",
+    "of",
+    "on",
+    "right",
+    "side",
+    "under",
+}
+RELATION_PHRASE_PREFIXES = (
+    "left of",
+    "left side",
+    "right of",
+    "right side",
+    "on the left",
+    "on the right",
+    "next to",
+    "beside",
+    "near",
+)
+NON_OBJECT_BASES = COLOR_WORDS | RELATION_WORDS | {"the", "a", "an", "with", "side", "position"}
+
 
 def contains_word(text: str, word: str) -> bool:
     text = normalize_text(text)
@@ -188,6 +219,24 @@ def base_object_of(obj: dict[str, Any]) -> str:
         return base
     words = prompt.split()
     return words[-1] if words else ""
+
+
+def is_valid_focus_object(obj: dict[str, Any]) -> bool:
+    prompt = normalize_text(obj.get("prompt") or "")
+    base_object = base_object_of(obj)
+    if not prompt or not base_object:
+        return False
+    if base_object in NON_OBJECT_BASES:
+        return False
+    prompt_words = prompt.split()
+    if len(prompt_words) == 1 and prompt in NON_OBJECT_BASES:
+        return False
+    if any(prompt.startswith(prefix) for prefix in RELATION_PHRASE_PREFIXES):
+        return False
+    if prompt_words and all(word in NON_OBJECT_BASES for word in prompt_words):
+        return False
+    return True
+
 
 def role_family_of(obj: dict[str, Any]) -> str:
     role = normalize_text(obj.get("role") or "")
@@ -295,7 +344,7 @@ def merge_object_group(objects: list[dict[str, Any]], base_object: str) -> dict[
 def merge_same_entity_focus_objects(focus: dict[str, Any], instructions: list[str]) -> dict[str, Any]:
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     passthrough: list[dict[str, Any]] = []
-    input_objects = [obj for obj in (focus.get("objects") or []) if isinstance(obj, dict)]
+    input_objects = [obj for obj in (focus.get("objects") or []) if isinstance(obj, dict) and is_valid_focus_object(obj)]
     available_bases = {base_object_of(obj) for obj in input_objects}
     for obj in input_objects:
         base_object = contextual_base_object(obj.get("base_object") or "", normalize_text(obj.get("prompt") or ""), available_bases)
@@ -318,6 +367,8 @@ def merge_same_entity_focus_objects(focus: dict[str, Any], instructions: list[st
     prompts: list[str] = []
     deduped_objects: list[dict[str, Any]] = []
     for obj in merged_objects:
+        if not is_valid_focus_object(obj):
+            continue
         prompt = normalize_text(obj.get("prompt") or "")
         if not prompt or prompt in prompt_seen:
             continue
@@ -1080,16 +1131,29 @@ def select_best_matches(judgments: list[dict[str, Any]], prompts: list[str]) -> 
         )
     return best
 
-def build_final_answers(best_matches: dict[str, Any], prompts: list[str]) -> list[dict[str, Any]]:
+def build_final_answers(best_matches: dict[str, Any], prompts: list[str], focus_objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    prompt_to_base_object: dict[str, str] = {}
+    for obj in focus_objects:
+        if not isinstance(obj, dict):
+            continue
+        prompt = normalize_text(obj.get("prompt") or "")
+        if not prompt:
+            continue
+        base_object = base_object_of(obj)
+        if base_object:
+            prompt_to_base_object[prompt] = base_object
+
     answers: list[dict[str, Any]] = []
     for prompt in prompts:
+        base_object = prompt_to_base_object.get(normalize_text(prompt), "")
         match = best_matches.get(prompt)
         if not match:
-            answers.append({"prompt": prompt, "found": False, "mask_index": None})
+            answers.append({"prompt": prompt, "base_object": base_object, "found": False, "mask_index": None})
             continue
         answers.append(
             {
                 "prompt": prompt,
+                "base_object": base_object,
                 "found": True,
                 "mask_index": match.get("mask_index"),
                 "confidence": match.get("confidence"),
@@ -1204,7 +1268,7 @@ def main() -> None:
             print(f"[MASK][FAIL] {position}/{len(instances)} index={mask_index:03d} {type(exc).__name__}: {exc}")
 
     best_matches = select_best_matches(judgments, focus["prompts"])
-    final_answers = build_final_answers(best_matches, focus["prompts"])
+    final_answers = build_final_answers(best_matches, focus["prompts"], focus["objects"])
     payload = {
         "schema_version": 2,
         "episode": args.episode,
