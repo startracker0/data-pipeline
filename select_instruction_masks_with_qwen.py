@@ -35,10 +35,10 @@ FOCUS_USER_PROMPT_TEMPLATE = """请阅读下面同一个 episode 的英文 instr
 3. 如果多条 instructions 只是同一个任务的不同说法，例如 teal microphone、white microphone、compact teal and white microphone 都指同一个 microphone，则只能输出一个 object。
 4. 不要因为同一真实物体在不同 instructions 中出现了不同外观短语就拆成多个 object。例如同一批 instructions 都是在把 can 放到 kitchenpot 边上，那么 red sauce can、red can with gold patterns、red and gold sauce can、sauce can with white details、smooth sauce can 都应视为同一个 sauce can，除非同一条 instruction 明确同时要求区分两个不同的 can。
 5. 必须输出 instructions 明确提到的所有任务相关实体物体，包括被操作物体、被放置目标、容器、支撑面/垫子、关键参照物；不要只输出被操作物体。但参照物也必须是可见实体物体本身。
-6. 不要输出动作、方位、关系短语、颜色词、形容词、机械臂、桌子、背景、gripper、left/right arm、robot。严禁把 yellow、red、right、left、right side、right of the red、right of the box、right side of the small pack 这类颜色/方位/关系短语当作 object。
-7. 如果 instruction 写的是 red playingcards box、yellow and red playingcards box、right of the red playingcards box，object 必须是 playingcards box / box，不能输出 red、yellow、right of the red。
-8. prompt 使用简短英文名词短语，优先保留稳定、最高频、最适合视觉定位的颜色/形状 + 类别，例如 green bottle、purple mat。禁止把跨 instruction 的属性做并集拼接，不要输出 red and white sauce can、grey and red and black kitchenpot 这类 prompt；应输出 red sauce can、sauce can、kitchenpot 或 white cylindrical pot 这种稳定短语。
-9. 如果同一 episode 中存在多个同类物体，必须保留 instructions 中反复出现、能唯一定位实例的稳定属性，例如 brown cap、brown top、lidded、label、plastic lid、round top；不要只输出过宽泛的 white sauce can。
+6. 不要把动作、排序目标、方位、关系短语、抽象区域、机械臂、桌子、背景、gripper、left/right arm、robot 当作 object。严禁输出 order、center、middle、center area、center by size、size order、arrangement 这类非实体任务描述。颜色词、形容词、形状词、材质词和部件词不能单独作为 object，但必须尽量保留在真实物体 prompt 中用于视觉定位，例如 red block、yellow and black hammer grip、silver curved hammer head、rectangular block。
+7. 如果 instruction 写的是 red playingcards box、yellow and red playingcards box、right of the red playingcards box，object 必须是 red/yellow playingcards box 或 playingcards box，不能输出 red、yellow、right of the red 这种孤立颜色/关系短语。
+8. prompt 使用简短英文名词短语，优先保留稳定、最高频、最适合视觉定位的颜色/形状/材质/关键部件 + 类别，例如 green bottle、purple mat、red block、yellow and black hammer grip、silver hammer head、white cylindrical pot。禁止把跨 instruction 的不稳定属性做长并集拼接，不要输出 grey and red and black kitchenpot 这类 prompt；但如果颜色/形状/材质/部件在多数 instructions 中反复出现，应保留。
+9. 如果同一 episode 中存在多个同类物体，必须保留 instructions 中反复出现、能唯一定位实例的稳定属性，例如 brown cap、brown top、lidded、label、plastic lid、round top、handle、grip、curved head、rectangular shape；不要只输出过宽泛的 white sauce can、hammer、block。
 10. 对 kitchenpot / pot 这类在仿真画面里常呈现为白色或浅灰色圆柱锅体的物体，不要强行保留 instructions 中互相冲突的 grey、black base、dark top、red indicator light 等局部描述；优先使用 kitchenpot 或 white cylindrical pot。
 11. 如果 instruction 同时描述 white fan 和 purple mat，必须输出两个 objects：white fan 与 purple mat。
 12. 严禁输出 aliases、attributes、reason、explanation 等长字段；每个 object 只允许 prompt、base_object、role 三个字段。
@@ -101,6 +101,8 @@ Candidate mask metadata:
 - Instruction target objects JSON 中 listed 的每个 prompt 都是要找的物体；即使 role 是 reference，只要 mask 是该参照物，也必须 is_target=true，并填写对应 matched_prompt。
 - 不要因为某个物体“不是 sauce can / 不是 manipulated target”而判 false；如果它匹配另一个 prompt，例如 teal kitchenpot，就应该 matched_prompt="teal kitchenpot"。
 - 如果可见 mask 区域只覆盖目标物体的一小部分但足以确认目标，is_target 可以为 true，但 confidence 应降低。
+- 如果目标包含 hammer，候选 mask 只覆盖 hammer 的 handle、grip、head、claw 等可见部件时也应判为 hammer；仿真中的 yellow/black handle 或细长握柄局部足以匹配 hammer，不要因为没有完整锤头就判 false。
+- 如果目标包含 block，候选 mask 是纯色或少纹理的 cube、cuboid、square、rectangular solid、red block 时也应判为 block；不要因为它只是实心红色/纯色块、缺少纹理或细节就判 false。
 - 对仿真画面中的颜色要允许轻微偏差：white、light grey、grey、off-white 对同一个 pot/kitchenpot 类目标应视为兼容；判断 kitchenpot/pot 时更看重圆柱锅体、盖子、把手、容器形状，不要仅因为 prompt 写 grey 但画面偏 white 就判 false。
 - 如果画面中有多个同类候选物体，必须使用 episode instructions 中反复出现的稳定实例属性消歧，例如 brown cap、brown top、brown lid、lidded、label、plastic lid、round top、handle；只有候选 mask 内确实可见这些属性时，才给高 confidence。
 - 对 sauce can / can / bottle / box 等容易出现多个实例的类别，不能只因为类别大致匹配就判高 confidence；如果缺少 prompt 或 instructions 中的关键实例属性，应降低 confidence，必要时判 false。
@@ -167,6 +169,25 @@ INSTANCE_DESCRIPTOR_PHRASES = {
     "white label",
 }
 
+VISUAL_DESCRIPTOR_PHRASES = {
+    "black and yellow",
+    "yellow and black",
+    "claw shaped",
+    "curved head",
+    "hammer grip",
+    "hammer handle",
+    "grippy handle",
+    "metal hammer",
+    "plastic handle",
+    "silver curved",
+    "two tone handle",
+    "red block",
+    "rectangular block",
+    "square block",
+    "solid block",
+    "cuboid block",
+}
+
 STRONG_INSTANCE_DESCRIPTOR_PHRASES = {
     "brown cap",
     "brown lid",
@@ -174,9 +195,15 @@ STRONG_INSTANCE_DESCRIPTOR_PHRASES = {
     "brown round top",
     "brown top",
     "plastic lid",
+    "red block",
+    "yellow and black",
+    "black and yellow",
+    "hammer grip",
+    "hammer handle",
+    "curved head",
 }
 
-DESCRIPTOR_PHRASE_WEIGHTS = {phrase: 1 for phrase in INSTANCE_DESCRIPTOR_PHRASES}
+DESCRIPTOR_PHRASE_WEIGHTS = {phrase: 1 for phrase in INSTANCE_DESCRIPTOR_PHRASES | VISUAL_DESCRIPTOR_PHRASES}
 DESCRIPTOR_PHRASE_WEIGHTS.update({phrase: 5 for phrase in STRONG_INSTANCE_DESCRIPTOR_PHRASES})
 
 REFERENCE_ROLES = {"placement", "reference", "support", "container", "target", "destination"}
@@ -209,7 +236,23 @@ RELATION_PHRASE_PREFIXES = (
     "beside",
     "near",
 )
-NON_OBJECT_BASES = COLOR_WORDS | RELATION_WORDS | {"the", "a", "an", "with", "side", "position"}
+NON_OBJECT_BASES = COLOR_WORDS | RELATION_WORDS | {
+    "the",
+    "a",
+    "an",
+    "with",
+    "side",
+    "position",
+    "order",
+    "center",
+    "centre",
+    "middle",
+    "area",
+    "size",
+    "by",
+    "arrangement",
+    "sequence",
+}
 
 
 def contains_word(text: str, word: str) -> bool:
@@ -315,17 +358,22 @@ def stable_prompt_score(prompt: str, base_object: str) -> tuple[int, int, int]:
 
     words = prompt.split()
     color_hits = sum(1 for color in COLOR_WORDS if contains_word(prompt, color))
+    visual_hits = sum(weight for phrase, weight in DESCRIPTOR_PHRASE_WEIGHTS.items() if phrase in prompt)
     low_hits = prompt_low_confidence_hits(prompt)
     score = 0
     score += 30 if base_object and contains_word(prompt, base_object) else 0
     score += 10 if base_object == "sauce can" and prompt == "red sauce can" else 0
+    score += 10 if base_object == "block" and contains_word(prompt, "red") else 0
+    score += 10 if base_object == "hammer" and (contains_word(prompt, "handle") or contains_word(prompt, "grip") or contains_word(prompt, "head") or contains_word(prompt, "claw")) else 0
     score += 6 if color_hits == 1 else 0
-    score += 6 if 2 <= len(words) <= 3 else 0
-    score -= 10 if "and" in words else 0
-    score -= 8 * max(0, color_hits - 1)
+    score += min(18, visual_hits * 3)
+    score += 6 if 2 <= len(words) <= 5 else 0
+    if "and" in words and not (base_object == "hammer" and ("yellow and black" in prompt or "black and yellow" in prompt)):
+        score -= 10
+    score -= 4 * max(0, color_hits - 2)
     score -= 12 * low_hits
-    score -= max(0, len(words) - 5) * 2
-    return (score, -abs(len(words) - 3), -len(prompt))
+    score -= max(0, len(words) - 6) * 2
+    return (score, -abs(len(words) - 4), -len(prompt))
 
 
 def select_stable_prompt(candidates: list[str], base_object: str) -> str:
@@ -960,6 +1008,113 @@ def infer_kitchenpot_prompt_from_text(text: str, focus: dict[str, Any]) -> str:
     return ""
 
 
+def prompts_for_base_object(focus: dict[str, Any], base_object: str) -> list[str]:
+    base_object = normalize_text(base_object)
+    prompts: list[str] = []
+    for obj in focus.get("objects") or []:
+        if not isinstance(obj, dict):
+            continue
+        prompt = normalize_text(obj.get("prompt") or "")
+        if not prompt:
+            continue
+        if normalize_text(obj.get("base_object") or "") == base_object:
+            prompts.append(prompt)
+        elif prompt == base_object or prompt.endswith(f" {base_object}"):
+            prompts.append(prompt)
+    return dedupe_keep_order(prompts)
+
+
+def prompt_for_base_object(focus: dict[str, Any], base_object: str) -> str:
+    prompts = prompts_for_base_object(focus, base_object)
+    return prompts[0] if prompts else ""
+
+
+def infer_block_prompt_from_text(text: str, focus: dict[str, Any]) -> str:
+    block_prompts = prompts_for_base_object(focus, "block")
+    if len(block_prompts) != 1:
+        return ""
+    prompt = block_prompts[0]
+    text = normalize_text(text)
+    if not text:
+        return ""
+    negative_block_cues = (
+        "not a block",
+        "not any block",
+        "not matching any block",
+        "not matching block",
+        "no visible block",
+        "no block",
+        "without block",
+        "not block",
+        "lacks visible shape",
+        "lacks distinguishable",
+        "too small and dark",
+        "too small",
+        "likely shadow",
+        "appears as uniform color patch",
+        "background",
+    )
+    if any(cue in text for cue in negative_block_cues):
+        return ""
+    positive_block_cues = (
+        "red block",
+        "blue block",
+        "green block",
+        "yellow block",
+        "magenta block",
+        "teal block",
+        "cube block",
+        "cuboid block",
+        "rectangular block",
+        "square block",
+        "solid red rectangular",
+        "solid cuboid",
+        "cuboid shape",
+        "rectangular shape",
+        "square shape",
+        "solid red color",
+        "red rectangular",
+        "red color",
+    )
+    has_shape = "cuboid" in text or "cube" in text or "rectangular" in text or "square" in text
+    has_color = any(color in text for color in ("red", "blue", "green", "yellow", "magenta", "teal", "purple", "orange"))
+    if any(cue in text for cue in positive_block_cues) or ("block" in text and has_shape and has_color):
+        return prompt
+    return ""
+
+
+def infer_hammer_prompt_from_text(text: str, focus: dict[str, Any]) -> str:
+    prompt = prompt_for_base_object(focus, "hammer")
+    if not prompt:
+        return ""
+    text = normalize_text(text)
+    hammer_part = (
+        "hammer" in text
+        or "handle" in text
+        or "grip" in text
+        or "head" in text
+        or "claw" in text
+    )
+    visible_part = (
+        "narrow vertical strip" in text
+        or "vertical strip" in text
+        or "yellow" in text
+        or "black" in text
+        or "handle" in text
+        or "grip" in text
+    )
+    rejected_as_partial = (
+        "insufficient" in text
+        or "not matching" in text
+        or "part of" in text
+        or "likely part" in text
+        or "not sufficient" in text
+    )
+    if hammer_part and visible_part and rejected_as_partial:
+        return prompt
+    return ""
+
+
 def instruction_descriptor_hits(instructions: list[str], prompt: str, base_object: str) -> int:
     instruction_text = normalize_text("\n".join(instructions))
     prompt_text = normalize_text(prompt)
@@ -1269,9 +1424,16 @@ def judge_one_mask(
         fallback_reason = "object_name fallback"
         if result["is_target"] or result["confidence"] > 0.0:
             inferred_prompt = infer_prompt_from_object_name(result["object_name"], focus)
+        visual_text = " ".join([result["reason"], result["object_name"], raw_text])
         if inferred_prompt not in valid_prompts and result["is_target"]:
-            inferred_prompt = infer_kitchenpot_prompt_from_text(" ".join([result["reason"], raw_text]), focus)
+            inferred_prompt = infer_kitchenpot_prompt_from_text(visual_text, focus)
             fallback_reason = "kitchenpot visual fallback"
+        if inferred_prompt not in valid_prompts:
+            inferred_prompt = infer_block_prompt_from_text(visual_text, focus)
+            fallback_reason = "block visual fallback"
+        if inferred_prompt not in valid_prompts:
+            inferred_prompt = infer_hammer_prompt_from_text(visual_text, focus)
+            fallback_reason = "hammer part fallback"
         if inferred_prompt in valid_prompts:
             result["matched_prompt"] = inferred_prompt
             result["is_target"] = True

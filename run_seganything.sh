@@ -10,7 +10,7 @@ DEVICE=${DEVICE:-0}
 DTYPE=${DTYPE:-float32}
 
 MODEL_DIR=${MODEL_DIR:-/mnt/xxr/SAM2}
-VIDEO=${VIDEO:-/apdcephfs_gy7/share_305004851/hunyuan/yinanliang/wam/fastwam/data/robotwin2.0/videos/chunk-007/observation.images.cam_high/episode_007005.mp4}
+VIDEO=${VIDEO:-/apdcephfs_gy7/share_305004851/hunyuan/yinanliang/wam/fastwam/data/robotwin2.0/videos/chunk-000/observation.images.cam_high/episode_000500.mp4}
 VIDEO_STEM=""
 if [[ -n "${VIDEO}" ]]; then
     VIDEO_STEM="$(basename "${VIDEO}")"
@@ -85,6 +85,7 @@ SAM31_SKIP_TAIL_FRAMES=${SAM31_SKIP_TAIL_FRAMES:-0}
 SAM31_FPS=${SAM31_FPS:-0}
 SAM31_ALPHA=${SAM31_ALPHA:-0.45}
 SAM31_NO_MASK=${SAM31_NO_MASK:-0}
+SAM31_BBOX_ONLY=${SAM31_BBOX_ONLY:-1}
 SAM31_DEBUG_SAVE_FRAMES=${SAM31_DEBUG_SAVE_FRAMES:-0}
 
 echo "[INFO] using python command: ${ENV_PYTHON}"
@@ -161,45 +162,73 @@ if [[ "${RUN_QWEN_SELECT}" == "1" ]]; then
             if [[ "${SAM31_NO_MASK}" == "1" ]]; then
                 SAM31_EXTRA_ARGS+=(--no-mask)
             fi
+            if [[ "${SAM31_BBOX_ONLY}" == "1" ]]; then
+                SAM31_EXTRA_ARGS+=(--bbox-only)
+            fi
             if [[ "${SAM31_FORCE_EXTRACT_FRAMES}" == "1" ]]; then
                 SAM31_EXTRA_ARGS+=(--force-extract-frames)
             fi
             if [[ -n "${SAM31_PROPAGATE_PROB_THRESH}" ]]; then
                 SAM31_EXTRA_ARGS+=(--propagate-prob-thresh "${SAM31_PROPAGATE_PROB_THRESH}")
             fi
-            echo "[INFO] running SAM3 official SAM2-style point tracking"
-            echo "[INFO] selection json: ${QWEN_SELECTION_JSON}"
-            echo "[INFO] SAM3.1 repo: ${SAM31_REPO}"
-            echo "[INFO] SAM3.1 input mode: ${SAM31_INPUT_MODE}"
-            echo "[INFO] SAM3.1 prompt type: ${SAM31_PROMPT_TYPE}"
-            echo "[INFO] SAM3.1 track session mode: ${SAM31_TRACK_SESSION_MODE}"
-            echo "[INFO] SAM3 tracker mode: official_sam2_style"
-            echo "[INFO] SAM3 propagate mode: ${SAM31_PROPAGATE_MODE}"
-            "${ENV_PYTHON}" "${SCRIPT_DIR}/track_final_answers_with_sam31.py" \
-                --video "${VIDEO}" \
-                --selection-json "${QWEN_SELECTION_JSON}" \
-                --out-dir "${SAM31_OUT_DIR}" \
-                --model-dir "${SAM31_MODEL_DIR}" \
-                --checkpoint "${SAM31_CHECKPOINT}" \
-                --sam3-repo "${SAM31_REPO}" \
-                --sam3-input-mode "${SAM31_INPUT_MODE}" \
-                --frames-dir "${SAM31_FRAMES_DIR}" \
-                --max-input-frames "${SAM31_MAX_INPUT_FRAMES}" \
-                --prompt-frame "${SAM31_PROMPT_FRAME}" \
-                --prompt-type "${SAM31_PROMPT_TYPE}" \
-                --track-session-mode "${SAM31_TRACK_SESSION_MODE}" \
-                --infer-prob-thresh "${SAM31_INFER_PROB_THRESH}" \
-                --propagate-mode "${SAM31_PROPAGATE_MODE}" \
-                --render-prob-thresh "${SAM31_RENDER_PROB_THRESH}" \
-                --max-num-objects "${SAM31_MAX_NUM_OBJECTS}" \
-                --multiplex-count "${SAM31_MULTIPLEX_COUNT}" \
-                --use-fa3 "${SAM31_USE_FA3}" \
-                --skip-tail-frames "${SAM31_SKIP_TAIL_FRAMES}" \
-                --fps "${SAM31_FPS}" \
-                --alpha "${SAM31_ALPHA}" \
-                --debug-save-frames "${SAM31_DEBUG_SAVE_FRAMES}" \
-                --ffmpeg "${FFMPEG}" \
-                "${SAM31_EXTRA_ARGS[@]}"
+            HAS_SAM31_TARGETS="$(${ENV_PYTHON} - "${QWEN_SELECTION_JSON}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+selection_json = Path(sys.argv[1])
+data = json.loads(selection_json.read_text(encoding="utf-8"))
+for answer in data.get("final_answers") or []:
+    if not answer.get("found"):
+        continue
+    bbox = answer.get("bbox_xyxy")
+    if not isinstance(bbox, list) or len(bbox) < 4:
+        continue
+    x1, y1, x2, y2 = [float(v) for v in bbox[:4]]
+    if x2 > x1 and y2 > y1:
+        print("1")
+        break
+else:
+    print("0")
+PY
+)"
+            if [[ "${HAS_SAM31_TARGETS}" != "1" ]]; then
+                echo "[WARN] Qwen selection 中没有 found=true 且 bbox_xyxy 有效的目标，跳过 SAM3.1 tracking: ${QWEN_SELECTION_JSON}" >&2
+            else
+                echo "[INFO] running SAM3 official SAM2-style point tracking"
+                echo "[INFO] selection json: ${QWEN_SELECTION_JSON}"
+                echo "[INFO] SAM3.1 repo: ${SAM31_REPO}"
+                echo "[INFO] SAM3.1 input mode: ${SAM31_INPUT_MODE}"
+                echo "[INFO] SAM3.1 prompt type: ${SAM31_PROMPT_TYPE}"
+                echo "[INFO] SAM3.1 track session mode: ${SAM31_TRACK_SESSION_MODE}"
+                echo "[INFO] SAM3 tracker mode: official_sam2_style"
+                echo "[INFO] SAM3 propagate mode: ${SAM31_PROPAGATE_MODE}"
+                "${ENV_PYTHON}" "${SCRIPT_DIR}/track_final_answers_with_sam31.py" \
+                    --video "${VIDEO}" \
+                    --selection-json "${QWEN_SELECTION_JSON}" \
+                    --out-dir "${SAM31_OUT_DIR}" \
+                    --model-dir "${SAM31_MODEL_DIR}" \
+                    --checkpoint "${SAM31_CHECKPOINT}" \
+                    --sam3-repo "${SAM31_REPO}" \
+                    --sam3-input-mode "${SAM31_INPUT_MODE}" \
+                    --frames-dir "${SAM31_FRAMES_DIR}" \
+                    --max-input-frames "${SAM31_MAX_INPUT_FRAMES}" \
+                    --prompt-frame "${SAM31_PROMPT_FRAME}" \
+                    --prompt-type "${SAM31_PROMPT_TYPE}" \
+                    --track-session-mode "${SAM31_TRACK_SESSION_MODE}" \
+                    --infer-prob-thresh "${SAM31_INFER_PROB_THRESH}" \
+                    --propagate-mode "${SAM31_PROPAGATE_MODE}" \
+                    --render-prob-thresh "${SAM31_RENDER_PROB_THRESH}" \
+                    --max-num-objects "${SAM31_MAX_NUM_OBJECTS}" \
+                    --multiplex-count "${SAM31_MULTIPLEX_COUNT}" \
+                    --use-fa3 "${SAM31_USE_FA3}" \
+                    --skip-tail-frames "${SAM31_SKIP_TAIL_FRAMES}" \
+                    --fps "${SAM31_FPS}" \
+                    --alpha "${SAM31_ALPHA}" \
+                    --debug-save-frames "${SAM31_DEBUG_SAVE_FRAMES}" \
+                    --ffmpeg "${FFMPEG}" \
+                    "${SAM31_EXTRA_ARGS[@]}"
+            fi
         fi
     fi
 fi

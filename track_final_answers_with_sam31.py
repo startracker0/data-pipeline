@@ -46,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fps", type=float, default=0.0, help="输出视频 fps，0 表示使用源视频 fps")
     parser.add_argument("--alpha", type=float, default=0.45, help="mask 叠加透明度")
     parser.add_argument("--no-mask", action="store_true", help="只画 bbox/点，不叠加 mask")
+    parser.add_argument("--bbox-only", action="store_true", help="只画 bbox，不叠加 mask，也不画提示点")
     parser.add_argument("--debug-save-frames", type=int, default=0, help="额外保存前 N 帧可视化 png")
     parser.add_argument("--ffmpeg", type=str, default="/mnt/xxr/bin/ffmpeg")
     return parser.parse_args()
@@ -545,6 +546,7 @@ def draw_frame(
     obj_id_to_info: dict[int, dict[str, Any]],
     alpha: float,
     draw_mask: bool,
+    draw_point: bool,
     render_prob_thresh: float,
 ) -> np.ndarray:
     canvas = image_rgb.copy()
@@ -589,7 +591,7 @@ def draw_frame(
 
         info = obj_id_to_info.get(oid, {})
         point = info.get("init_point_xy")
-        if point and len(point) >= 2:
+        if draw_point and point and len(point) >= 2:
             px = int(round(float(point[0])))
             py = int(round(float(point[1])))
             cv2.circle(canvas, (px, py), 4, color.tolist(), -1)
@@ -604,6 +606,7 @@ def render_video(
     fps: float,
     alpha: float,
     draw_mask: bool,
+    draw_point: bool,
     render_prob_thresh: float,
     debug_save_frames: int,
     ffmpeg: str | None,
@@ -641,6 +644,7 @@ def render_video(
             obj_id_to_info=obj_id_to_info,
             alpha=alpha,
             draw_mask=draw_mask,
+            draw_point=draw_point,
             render_prob_thresh=render_prob_thresh,
         )
         overlay_bgr = cv2.cvtColor(overlay_rgb, cv2.COLOR_RGB2BGR)
@@ -692,6 +696,7 @@ def render_frames_dir_video(
     fps: float,
     alpha: float,
     draw_mask: bool,
+    draw_point: bool,
     render_prob_thresh: float,
     debug_save_frames: int,
     ffmpeg: str | None,
@@ -727,6 +732,7 @@ def render_frames_dir_video(
             obj_id_to_info=obj_id_to_info,
             alpha=alpha,
             draw_mask=draw_mask,
+            draw_point=draw_point,
             render_prob_thresh=render_prob_thresh,
         )
         overlay_bgr = cv2.cvtColor(overlay_rgb, cv2.COLOR_RGB2BGR)
@@ -883,6 +889,8 @@ def main() -> None:
     metadata_json = out_dir / f"{video.stem}_sam31_point_tracking_metadata.json"
     output_video = out_dir / f"{video.stem}_sam31_point_tracking_overlay.mp4"
     dump_results_jsonl(outputs_per_frame, obj_id_to_info, results_jsonl, num_frames, args.render_prob_thresh)
+    draw_mask = (not args.no_mask) and (not args.bbox_only)
+    draw_point = not args.bbox_only
     if sam3_input_mode == "frames":
         rendered_frames = render_frames_dir_video(
             frames_dir=frames_dir,
@@ -891,7 +899,8 @@ def main() -> None:
             out_video=output_video,
             fps=output_fps,
             alpha=float(args.alpha),
-            draw_mask=not args.no_mask,
+            draw_mask=draw_mask,
+            draw_point=draw_point,
             render_prob_thresh=float(args.render_prob_thresh),
             debug_save_frames=int(args.debug_save_frames),
             ffmpeg=ffmpeg,
@@ -904,7 +913,8 @@ def main() -> None:
             out_video=output_video,
             fps=output_fps,
             alpha=float(args.alpha),
-            draw_mask=not args.no_mask,
+            draw_mask=draw_mask,
+            draw_point=draw_point,
             render_prob_thresh=float(args.render_prob_thresh),
             debug_save_frames=int(args.debug_save_frames),
             ffmpeg=ffmpeg,
@@ -933,6 +943,9 @@ def main() -> None:
         "propagate_mode": args.propagate_mode,
         "propagate_prob_thresh": args.propagate_prob_thresh,
         "render_prob_thresh": args.render_prob_thresh,
+        "render_bbox_only": bool(args.bbox_only),
+        "render_draw_mask": bool(draw_mask),
+        "render_draw_point": bool(draw_point),
         "point_prompts": point_prompts,
         "obj_id_to_info": obj_id_to_info,
         "results_jsonl": str(results_jsonl),
