@@ -38,9 +38,10 @@ FOCUS_USER_PROMPT_TEMPLATE = """请阅读下面同一个 episode 的英文 instr
 6. 不要输出动作、方位、关系短语、颜色词、形容词、机械臂、桌子、背景、gripper、left/right arm、robot。严禁把 yellow、red、right、left、right side、right of the red、right of the box、right side of the small pack 这类颜色/方位/关系短语当作 object。
 7. 如果 instruction 写的是 red playingcards box、yellow and red playingcards box、right of the red playingcards box，object 必须是 playingcards box / box，不能输出 red、yellow、right of the red。
 8. prompt 使用简短英文名词短语，优先保留稳定、最高频、最适合视觉定位的颜色/形状 + 类别，例如 green bottle、purple mat。禁止把跨 instruction 的属性做并集拼接，不要输出 red and white sauce can、grey and red and black kitchenpot 这类 prompt；应输出 red sauce can、sauce can、kitchenpot 或 white cylindrical pot 这种稳定短语。
-9. 对 kitchenpot / pot 这类在仿真画面里常呈现为白色或浅灰色圆柱锅体的物体，不要强行保留 instructions 中互相冲突的 grey、black base、dark top、red indicator light 等局部描述；优先使用 kitchenpot 或 white cylindrical pot。
-10. 如果 instruction 同时描述 white fan 和 purple mat，必须输出两个 objects：white fan 与 purple mat。
-11. 严禁输出 aliases、attributes、reason、explanation 等长字段；每个 object 只允许 prompt、base_object、role 三个字段。
+9. 如果同一 episode 中存在多个同类物体，必须保留 instructions 中反复出现、能唯一定位实例的稳定属性，例如 brown cap、brown top、lidded、label、plastic lid、round top；不要只输出过宽泛的 white sauce can。
+10. 对 kitchenpot / pot 这类在仿真画面里常呈现为白色或浅灰色圆柱锅体的物体，不要强行保留 instructions 中互相冲突的 grey、black base、dark top、red indicator light 等局部描述；优先使用 kitchenpot 或 white cylindrical pot。
+11. 如果 instruction 同时描述 white fan 和 purple mat，必须输出两个 objects：white fan 与 purple mat。
+12. 严禁输出 aliases、attributes、reason、explanation 等长字段；每个 object 只允许 prompt、base_object、role 三个字段。
 
 输出 JSON schema：
 {
@@ -101,6 +102,8 @@ Candidate mask metadata:
 - 不要因为某个物体“不是 sauce can / 不是 manipulated target”而判 false；如果它匹配另一个 prompt，例如 teal kitchenpot，就应该 matched_prompt="teal kitchenpot"。
 - 如果可见 mask 区域只覆盖目标物体的一小部分但足以确认目标，is_target 可以为 true，但 confidence 应降低。
 - 对仿真画面中的颜色要允许轻微偏差：white、light grey、grey、off-white 对同一个 pot/kitchenpot 类目标应视为兼容；判断 kitchenpot/pot 时更看重圆柱锅体、盖子、把手、容器形状，不要仅因为 prompt 写 grey 但画面偏 white 就判 false。
+- 如果画面中有多个同类候选物体，必须使用 episode instructions 中反复出现的稳定实例属性消歧，例如 brown cap、brown top、brown lid、lidded、label、plastic lid、round top、handle；只有候选 mask 内确实可见这些属性时，才给高 confidence。
+- 对 sauce can / can / bottle / box 等容易出现多个实例的类别，不能只因为类别大致匹配就判高 confidence；如果缺少 prompt 或 instructions 中的关键实例属性，应降低 confidence，必要时判 false。
 - matched_prompt 必须来自 Instruction target objects JSON 的 prompts；如果不匹配任何目标，matched_prompt 使用空字符串。
 - confidence 范围是 0 到 1。
 - 只输出 JSON 本身。
@@ -149,6 +152,32 @@ LOW_CONFIDENCE_DESCRIPTOR_PHRASES = {
     "red indicator light",
     "white details",
 }
+
+INSTANCE_DESCRIPTOR_PHRASES = {
+    "brown cap",
+    "brown lid",
+    "brown lidded",
+    "brown round top",
+    "brown top",
+    "label",
+    "labeled",
+    "labelled",
+    "plastic lid",
+    "round top",
+    "white label",
+}
+
+STRONG_INSTANCE_DESCRIPTOR_PHRASES = {
+    "brown cap",
+    "brown lid",
+    "brown lidded",
+    "brown round top",
+    "brown top",
+    "plastic lid",
+}
+
+DESCRIPTOR_PHRASE_WEIGHTS = {phrase: 1 for phrase in INSTANCE_DESCRIPTOR_PHRASES}
+DESCRIPTOR_PHRASE_WEIGHTS.update({phrase: 5 for phrase in STRONG_INSTANCE_DESCRIPTOR_PHRASES})
 
 REFERENCE_ROLES = {"placement", "reference", "support", "container", "target", "destination"}
 MANIPULATED_ROLES = {"", "manipulated", "object", "item"}
@@ -902,6 +931,21 @@ def infer_kitchenpot_prompt_from_text(text: str, focus: dict[str, Any]) -> str:
     text = normalize_text(text)
     if not text:
         return ""
+    negative_cues = (
+        "not matching",
+        "not identifiable",
+        "not sufficient",
+        "not any target",
+        "not matching any target",
+        "not matching white",
+        "not the target",
+        "not target",
+        "background",
+        "shadow",
+        "too ambiguous",
+    )
+    if any(cue in text for cue in negative_cues):
+        return ""
     looks_like_light_pot = (
         ("white" in text or "grey" in text or "gray" in text or "light" in text)
         and ("cylindrical" in text or "round" in text or "container" in text or "pot" in text)
@@ -914,6 +958,130 @@ def infer_kitchenpot_prompt_from_text(text: str, focus: dict[str, Any]) -> str:
         if normalize_text(obj.get("base_object") or "") == "kitchenpot":
             return normalize_text(obj.get("prompt") or "")
     return ""
+
+
+def instruction_descriptor_hits(instructions: list[str], prompt: str, base_object: str) -> int:
+    instruction_text = normalize_text("\n".join(instructions))
+    prompt_text = normalize_text(prompt)
+    base_text = normalize_text(base_object)
+    score = 0
+    for phrase in INSTANCE_DESCRIPTOR_PHRASES:
+        if phrase in instruction_text and (phrase in prompt_text or phrase in base_text):
+            score += 2
+    return score
+
+
+def instruction_descriptor_presence(instructions: list[str]) -> int:
+    instruction_text = normalize_text("\n".join(instructions))
+    return sum(1 for phrase in INSTANCE_DESCRIPTOR_PHRASES if phrase in instruction_text)
+
+
+def remove_quoted_text(text: str) -> str:
+    return re.sub(r"['\"`][^'\"`]*['\"`]", " ", text)
+
+
+def judgment_descriptor_hits(item: dict[str, Any], instructions: list[str]) -> int:
+    reason = remove_quoted_text(str(item.get("reason") or ""))
+    text = normalize_text(" ".join([
+        reason,
+        str(item.get("object_name") or ""),
+    ]))
+    instruction_text = normalize_text("\n".join(instructions))
+    score = 0
+    for phrase in INSTANCE_DESCRIPTOR_PHRASES:
+        if phrase in instruction_text and phrase in text:
+            score += DESCRIPTOR_PHRASE_WEIGHTS.get(phrase, 1)
+    speculative_cues = (
+        "consistent with brown top under lighting",
+        "appears light colored but consistent",
+        "appears light-colored but consistent",
+        "despite top not fully visible",
+    )
+    negative_top_cues = (
+        "top not fully visible",
+        "top not visible",
+        "lid not fully visible",
+        "lid not visible",
+        "cap not fully visible",
+        "cap not visible",
+    )
+    if any(cue in text for cue in speculative_cues):
+        score = max(0, score - 5)
+    if any(cue in text for cue in negative_top_cues):
+        score = max(0, score - 5)
+    return score
+
+
+def prompt_strong_descriptor_presence(instructions: list[str], prompt: str) -> bool:
+    instruction_text = normalize_text("\n".join(instructions))
+    prompt_text = normalize_text(prompt)
+    return any(phrase in instruction_text and phrase in prompt_text for phrase in STRONG_INSTANCE_DESCRIPTOR_PHRASES)
+
+
+def focus_base_object_by_prompt(focus: dict[str, Any], prompt: str) -> str:
+    normalized_prompt = normalize_text(prompt)
+    for obj in focus.get("objects") or []:
+        if not isinstance(obj, dict):
+            continue
+        if normalize_text(obj.get("prompt") or "") == normalized_prompt:
+            return base_object_of(obj)
+    return ""
+
+
+def bbox_area(item: dict[str, Any]) -> float:
+    bbox = item.get("bbox_xyxy")
+    if not isinstance(bbox, list) or len(bbox) < 4:
+        return 0.0
+    x1, y1, x2, y2 = [float(v) for v in bbox[:4]]
+    return max(0.0, (x2 - x1 + 1.0) * (y2 - y1 + 1.0))
+
+
+def bbox_fill_ratio(item: dict[str, Any]) -> float:
+    box_area = bbox_area(item)
+    mask_area = float(item.get("area", 0.0) or 0.0)
+    if box_area <= 0.0 or mask_area <= 0.0:
+        return 0.0
+    return max(0.0, min(1.0, mask_area / box_area))
+
+
+def candidate_sort_key(item: dict[str, Any], prompt: str, focus: dict[str, Any], instructions: list[str]) -> tuple[float, ...]:
+    base_object = focus_base_object_by_prompt(focus, prompt)
+    ambiguous_base = base_object in {"sauce can", "can", "bottle", "box"}
+    compact_base = base_object in {"kitchenpot", "pot", "pan", "bowl"}
+    descriptor_score = judgment_descriptor_hits(item, instructions) if ambiguous_base else 0
+    confidence = float(item.get("confidence", 0.0) or 0.0)
+    sam_score = float(item.get("sam_score", 0.0) or 0.0)
+    area = int(item.get("area", 0) or 0)
+    fill_ratio = bbox_fill_ratio(item)
+    prompt_descriptor_bonus = instruction_descriptor_hits(instructions, prompt, base_object)
+    has_strong_prompt_descriptor = prompt_strong_descriptor_presence(instructions, prompt)
+    if ambiguous_base:
+        confidence += min(0.3, descriptor_score * 0.06)
+    if ambiguous_base and (prompt_descriptor_bonus > 0 or instruction_descriptor_presence(instructions) > 0) and descriptor_score == 0:
+        confidence -= 0.25 if has_strong_prompt_descriptor else 0.15
+    if ambiguous_base and has_strong_prompt_descriptor:
+        return (
+            float(descriptor_score),
+            confidence,
+            fill_ratio,
+            sam_score,
+            float(area),
+        )
+    if compact_base:
+        return (
+            confidence,
+            fill_ratio,
+            sam_score,
+            -bbox_area(item),
+            float(area),
+        )
+    return (
+        confidence,
+        descriptor_score,
+        fill_ratio,
+        sam_score,
+        float(area),
+    )
 
 
 def build_focus_prompt(episode: str, instructions: list[str], max_instructions: int) -> str:
@@ -1097,9 +1265,11 @@ def judge_one_mask(
     }
     valid_prompts = set(focus["prompts"])
     if result["matched_prompt"] not in valid_prompts:
-        inferred_prompt = infer_prompt_from_object_name(result["object_name"], focus)
+        inferred_prompt = ""
         fallback_reason = "object_name fallback"
-        if inferred_prompt not in valid_prompts:
+        if result["is_target"] or result["confidence"] > 0.0:
+            inferred_prompt = infer_prompt_from_object_name(result["object_name"], focus)
+        if inferred_prompt not in valid_prompts and result["is_target"]:
             inferred_prompt = infer_kitchenpot_prompt_from_text(" ".join([result["reason"], raw_text]), focus)
             fallback_reason = "kitchenpot visual fallback"
         if inferred_prompt in valid_prompts:
@@ -1114,7 +1284,7 @@ def judge_one_mask(
     return result
 
 
-def select_best_matches(judgments: list[dict[str, Any]], prompts: list[str]) -> dict[str, Any]:
+def select_best_matches(judgments: list[dict[str, Any]], prompts: list[str], focus: dict[str, Any], instructions: list[str]) -> dict[str, Any]:
     best: dict[str, Any] = {}
     for prompt in prompts:
         candidates = [item for item in judgments if item.get("is_target") and item.get("matched_prompt") == prompt]
@@ -1123,11 +1293,7 @@ def select_best_matches(judgments: list[dict[str, Any]], prompts: list[str]) -> 
             continue
         best[prompt] = max(
             candidates,
-            key=lambda item: (
-                float(item.get("confidence", 0.0)),
-                int(item.get("area", 0) or 0),
-                float(item.get("sam_score", 0.0) or 0.0),
-            ),
+            key=lambda item: candidate_sort_key(item, prompt, focus, instructions),
         )
     return best
 
@@ -1267,7 +1433,7 @@ def main() -> None:
             )
             print(f"[MASK][FAIL] {position}/{len(instances)} index={mask_index:03d} {type(exc).__name__}: {exc}")
 
-    best_matches = select_best_matches(judgments, focus["prompts"])
+    best_matches = select_best_matches(judgments, focus["prompts"], focus, instructions)
     final_answers = build_final_answers(best_matches, focus["prompts"], focus["objects"])
     payload = {
         "schema_version": 2,

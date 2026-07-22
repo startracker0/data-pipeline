@@ -10,7 +10,7 @@ DEVICE=${DEVICE:-0}
 DTYPE=${DTYPE:-float32}
 
 MODEL_DIR=${MODEL_DIR:-/mnt/xxr/SAM2}
-VIDEO=${VIDEO:-/apdcephfs_gy7/share_305004851/hunyuan/yinanliang/wam/fastwam/data/robotwin2.0/videos/chunk-013/observation.images.cam_high/episode_013000.mp4}
+VIDEO=${VIDEO:-/apdcephfs_gy7/share_305004851/hunyuan/yinanliang/wam/fastwam/data/robotwin2.0/videos/chunk-007/observation.images.cam_high/episode_007005.mp4}
 VIDEO_STEM=""
 if [[ -n "${VIDEO}" ]]; then
     VIDEO_STEM="$(basename "${VIDEO}")"
@@ -72,7 +72,7 @@ SAM31_FRAMES_DIR=${SAM31_FRAMES_DIR:-${SAM31_OUT_DIR}/${VIDEO_STEM}_sam31_input_
 SAM31_FORCE_EXTRACT_FRAMES=${SAM31_FORCE_EXTRACT_FRAMES:-0}
 SAM31_MAX_INPUT_FRAMES=${SAM31_MAX_INPUT_FRAMES:-0}
 SAM31_PROMPT_FRAME=${SAM31_PROMPT_FRAME:-0}
-SAM31_PROMPT_TYPE=${SAM31_PROMPT_TYPE:-point}
+SAM31_PROMPT_TYPE=${SAM31_PROMPT_TYPE:-box}
 SAM31_TRACK_SESSION_MODE=${SAM31_TRACK_SESSION_MODE:-multi}
 SAM31_INFER_PROB_THRESH=${SAM31_INFER_PROB_THRESH:-0.05}
 SAM31_PROPAGATE_MODE=${SAM31_PROPAGATE_MODE:-official}
